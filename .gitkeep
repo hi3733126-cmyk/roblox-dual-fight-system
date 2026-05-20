@@ -1,0 +1,584 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+local CollectionService = game:GetService("CollectionService")
+
+local Tool = script.Parent
+local Sword = Tool:WaitForChild("Handle")
+
+local Slash_Sound = Sword:WaitForChild("SwordSlash")
+local Lunge_Sound = Sword:WaitForChild("SwordLunge")
+local Unsheath_Sound = Sword:WaitForChild("Unsheath")
+
+local Stats = Sword:WaitForChild("Stats")
+
+local Idle_Damage = Stats.Idle.Value
+local Slash_Damage = Stats.Slash.Value
+local Lunge_Damage = Stats.Lunge.Value
+
+local damage = Idle_Damage
+local ToolOwner = nil
+
+local Enabled = true
+local Last_Attack = 0
+
+local StudCap = 13
+local IsTouchingSafeY = false
+
+local KILL_TAG_LIFETIME = 5
+
+local MONITORED_HUMANOIDS = {}
+
+----------------------------------------------------
+-- Leaderstats
+----------------------------------------------------
+
+local function EnsureLeaderstats(Player)
+	local leaderstats = Player:FindFirstChild("leaderstats")
+
+	if not leaderstats then
+		leaderstats = Instance.new("Folder")
+		leaderstats.Name = "leaderstats"
+		leaderstats.Parent = Player
+	end
+
+	local kills = leaderstats:FindFirstChild("Kills")
+
+	if not kills then
+		kills = Instance.new("IntValue")
+		kills.Name = "Kills"
+		kills.Value = 0
+		kills.Parent = leaderstats
+	end
+
+	local time = leaderstats:FindFirstChild("Time")
+
+	if not time then
+		time = Instance.new("IntValue")
+		time.Name = "Time"
+		time.Value = 0
+		time.Parent = leaderstats
+	end
+end
+
+----------------------------------------------------
+-- Victim Resolver
+----------------------------------------------------
+
+local function GetVictimPlayer(Humanoid)
+	if not Humanoid then
+		return nil
+	end
+
+	local victimUserId = Humanoid:GetAttribute("VictimUserId")
+
+	if typeof(victimUserId) == "number" and victimUserId > 0 then
+		local p = Players:GetPlayerByUserId(victimUserId)
+
+		if p then
+			return p
+		end
+	end
+
+	if Humanoid.Parent then
+		return Players:GetPlayerFromCharacter(Humanoid.Parent)
+	end
+
+	return nil
+end
+
+----------------------------------------------------
+-- Kill Reward
+----------------------------------------------------
+
+local function AwardKill(Humanoid)
+	if not Humanoid then
+		return
+	end
+
+	if Humanoid:GetAttribute("KillAwarded") then
+		return
+	end
+
+	if Humanoid:GetAttribute("KillProcessing") then
+		return
+	end
+
+	Humanoid:SetAttribute("KillProcessing", true)
+
+	local creator = Humanoid:FindFirstChild("creator")
+	local killer = creator and creator.Value
+
+	if not (killer and killer:IsA("Player")) then
+		Humanoid:SetAttribute("KillProcessing", nil)
+		return
+	end
+
+	Humanoid:SetAttribute("KillAwarded", true)
+
+	EnsureLeaderstats(killer)
+
+	local killerStats = killer:FindFirstChild("leaderstats")
+
+	if not killerStats then
+		Humanoid:SetAttribute("KillProcessing", nil)
+		return
+	end
+
+	local kills = killerStats:FindFirstChild("Kills")
+	local killerTime = killerStats:FindFirstChild("Time")
+
+	if not (kills and killerTime) then
+		Humanoid:SetAttribute("KillProcessing", nil)
+		return
+	end
+
+	kills.Value += 1
+
+	if killer.Character then
+		local killerHumanoid = killer.Character:FindFirstChild("Humanoid")
+
+		if killerHumanoid then
+			killerHumanoid.Health = math.min(
+				killerHumanoid.MaxHealth,
+				killerHumanoid.Health + 100
+			)
+		end
+	end
+
+	local victim = GetVictimPlayer(Humanoid)
+
+	if victim then
+		EnsureLeaderstats(victim)
+
+		local victimStats = victim:FindFirstChild("leaderstats")
+		local victimTime = victimStats and victimStats:FindFirstChild("Time")
+
+		if victimTime then
+			local snap = Humanoid:GetAttribute("VictimTimeSnapshot")
+			local stolenTime = (typeof(snap) == "number" and snap >= 0) and snap or victimTime.Value
+
+			local studs = 0
+
+			if killer.Character and victim.Character then
+				local kRoot = killer.Character:FindFirstChild("HumanoidRootPart")
+				local vRoot = victim.Character:FindFirstChild("HumanoidRootPart")
+
+				if kRoot and vRoot then
+					studs = (kRoot.Position - vRoot.Position).Magnitude
+				end
+			end
+
+			if ReplicatedStorage:FindFirstChild("KillFeed") then
+				ReplicatedStorage.KillFeed:Fire(
+					killer.Name,
+					victim.Name,
+					studs,
+					stolenTime
+				)
+			end
+
+			if ReplicatedStorage:FindFirstChild("Remotes")
+				and ReplicatedStorage.Remotes:FindFirstChild("SendKillNotif") then
+
+				ReplicatedStorage.Remotes.SendKillNotif:FireClient(
+					killer,
+					victim
+				)
+			end
+
+			killerTime.Value = killerTime.Value + stolenTime
+			victimTime.Value = math.max(victimTime.Value - stolenTime, 0)
+		end
+	end
+
+	Humanoid:SetAttribute("KillProcessing", nil)
+end
+
+----------------------------------------------------
+-- Humanoid Monitoring
+----------------------------------------------------
+
+local function MonitorHumanoid(Humanoid)
+	if not Humanoid then
+		return
+	end
+
+	if MONITORED_HUMANOIDS[Humanoid] then
+		return
+	end
+
+	MONITORED_HUMANOIDS[Humanoid] = true
+
+	Humanoid.Died:Connect(function()
+		task.defer(function()
+			AwardKill(Humanoid)
+		end)
+	end)
+
+	Humanoid.AncestryChanged:Connect(function(_, parent)
+		if not parent then
+			MONITORED_HUMANOIDS[Humanoid] = nil
+		end
+	end)
+end
+
+----------------------------------------------------
+-- Tag Damage
+----------------------------------------------------
+
+local function TagHumanoid(S_Player, OtherHumanoid)
+	if not (
+		OtherHumanoid
+		and OtherHumanoid:IsA("Humanoid")
+		and OtherHumanoid.Health > 0
+	) then
+		return
+	end
+
+	local OtherCharacter = OtherHumanoid.Parent
+	local OtherPlayer = Players:GetPlayerFromCharacter(OtherCharacter)
+
+	------------------------------------------------
+	-- 안전지대
+	------------------------------------------------
+
+	if OtherPlayer and S_Player then
+		local S_Safe = CollectionService:HasTag(S_Player, "safe")
+		local O_Safe = CollectionService:HasTag(OtherPlayer, "safe")
+
+		if S_Safe and O_Safe then
+			return
+		end
+	end
+
+	------------------------------------------------
+	-- 피해자 캐시
+	------------------------------------------------
+
+	if OtherPlayer then
+		OtherHumanoid:SetAttribute("VictimUserId", OtherPlayer.UserId)
+		local oStats = OtherPlayer:FindFirstChild("leaderstats")
+		local oTime = oStats and oStats:FindFirstChild("Time")
+		OtherHumanoid:SetAttribute("VictimTimeSnapshot", oTime and oTime.Value or 0)
+	end
+
+	------------------------------------------------
+	-- creator
+	------------------------------------------------
+
+	if S_Player then
+		local oldTag = OtherHumanoid:FindFirstChild("creator")
+
+		if oldTag then
+			oldTag:Destroy()
+		end
+
+		local Tag = Instance.new("ObjectValue")
+		Tag.Name = "creator"
+		Tag.Value = S_Player
+		Tag.Parent = OtherHumanoid
+
+		Debris:AddItem(Tag, KILL_TAG_LIFETIME)
+	end
+
+	------------------------------------------------
+	-- 죽음 추적
+	------------------------------------------------
+
+	MonitorHumanoid(OtherHumanoid)
+
+	------------------------------------------------
+	-- 데미지
+	------------------------------------------------
+
+	OtherHumanoid:TakeDamage(damage)
+end
+
+----------------------------------------------------
+-- Hit Detection
+----------------------------------------------------
+
+local function onTouched(Hit)
+	local hitParent = Hit and Hit.Parent
+
+	if not hitParent then
+		return
+	end
+
+	local Humanoid = hitParent:FindFirstChild("Humanoid")
+
+	if not (Humanoid and ToolOwner and ToolOwner.Character) then
+		return
+	end
+
+	if Humanoid.Health <= 0 then
+		return
+	end
+
+	------------------------------------------------
+	-- Safe Y
+	------------------------------------------------
+
+	local safezone = workspace:FindFirstChild("Safezone")
+	local safePart = safezone and safezone:FindFirstChild("safey")
+
+	if safePart and Hit == safePart then
+		IsTouchingSafeY = true
+		return
+	end
+
+	if IsTouchingSafeY then
+		return
+	end
+
+	------------------------------------------------
+	-- 자기 자신 제외
+	------------------------------------------------
+
+	local ownerChar = ToolOwner.Character
+	local ownerHum = ownerChar and ownerChar:FindFirstChild("Humanoid")
+
+	if not ownerHum or ownerHum.Health <= 0 then
+		return
+	end
+
+	if Humanoid.Parent == ownerChar then
+		return
+	end
+
+	------------------------------------------------
+	-- 거리 제한
+	------------------------------------------------
+
+	local ToolPosition = Tool.Handle.Position
+	local HumanoidRoot = hitParent:FindFirstChild("HumanoidRootPart")
+
+	if HumanoidRoot then
+		local Distance = (ToolPosition - HumanoidRoot.Position).Magnitude
+
+		if Distance > StudCap then
+			return
+		end
+	end
+
+	local S_Player = Players:GetPlayerFromCharacter(Tool.Parent)
+	local O_Player = Players:GetPlayerFromCharacter(Humanoid.Parent)
+
+	local IsNPC = O_Player == nil
+
+	if S_Player and S_Player == ToolOwner then
+		local S_Safe = CollectionService:HasTag(S_Player, "safe")
+		local O_Safe = O_Player and CollectionService:HasTag(O_Player, "gainingTime")
+
+		if S_Safe and O_Safe then
+			return
+		end
+
+		TagHumanoid(S_Player, Humanoid)
+
+	elseif IsNPC and ToolOwner then
+		TagHumanoid(ToolOwner, Humanoid)
+	end
+end
+
+local function onTouchEnded(Hit)
+	local safezone = workspace:FindFirstChild("Safezone")
+	local safePart = safezone and safezone:FindFirstChild("safey")
+
+	if safePart and Hit == safePart then
+		IsTouchingSafeY = false
+	end
+end
+
+----------------------------------------------------
+-- Attacks
+----------------------------------------------------
+
+local function Slash()
+	damage = Slash_Damage
+
+	Slash_Sound:Play()
+
+	local Animation = Instance.new("StringValue")
+	Animation.Name = "toolanim"
+	Animation.Value = "Slash"
+	Animation.Parent = Tool
+
+	task.wait(0.2)
+
+	damage = Idle_Damage
+end
+
+local function Lunge()
+	damage = Lunge_Damage
+
+	Lunge_Sound:Play()
+
+	local Animation = Instance.new("StringValue")
+	Animation.Name = "toolanim"
+	Animation.Value = "Lunge"
+	Animation.Parent = Tool
+
+	task.wait(0.25)
+
+	Tool.GripUp = Vector3.new(0,0,0)
+
+	task.wait(0.75)
+
+	Tool.GripUp = Vector3.new(0,0,1)
+
+	damage = Idle_Damage
+end
+
+----------------------------------------------------
+-- Equip / Unequip
+----------------------------------------------------
+
+local function onEquipped()
+	Unsheath_Sound:Play()
+
+	ToolOwner = Players:GetPlayerFromCharacter(Tool.Parent)
+
+	if ToolOwner then
+		EnsureLeaderstats(ToolOwner)
+	end
+
+	local Humanoid = Tool.Parent:FindFirstChild("Humanoid")
+
+	if Tool.Parent:FindFirstChild("Preview") then
+		Tool.Parent.Preview:Destroy()
+	end
+
+	if Humanoid then
+		MonitorHumanoid(Humanoid)
+
+		Humanoid.Died:Connect(function()
+			ToolOwner = nil
+			Debris:AddItem(Tool, 0.75)
+		end)
+	end
+end
+
+local function Unequipped()
+	ToolOwner = nil
+
+	if not Tool.Parent or not Tool.Parent.Parent then
+		return
+	end
+
+	local player = Tool.Parent.Parent
+
+	if not player:IsA("Player") then
+		return
+	end
+
+	local char = player.Character
+
+	if not char then
+		return
+	end
+
+	local swordPreview
+
+	if Tool:FindFirstChild("Mesh") then
+		swordPreview = Tool.Mesh:Clone()
+	else
+		swordPreview = Tool.Handle:Clone()
+
+		if swordPreview:FindFirstChild("SwordLunge") then
+			swordPreview.SwordLunge:Destroy()
+		end
+
+		if swordPreview:FindFirstChild("SwordSlash") then
+			swordPreview.SwordSlash:Destroy()
+		end
+
+		if swordPreview:FindFirstChild("Unsheath") then
+			swordPreview.Unsheath:Destroy()
+		end
+	end
+
+	if swordPreview:FindFirstChild("SelectionBox") then
+		swordPreview.SelectionBox:Destroy()
+	end
+
+	if char:FindFirstChild("Preview") then
+		char.Preview:Destroy()
+	end
+
+	swordPreview.Name = "Preview"
+	swordPreview.Parent = char
+
+	if swordPreview:IsA("BasePart") then
+		swordPreview.CanCollide = false
+	end
+
+	local weld = Instance.new("Weld")
+
+	weld.Part0 = char:FindFirstChild("Torso")
+		or char:FindFirstChild("HumanoidRootPart")
+
+	weld.Part1 = swordPreview
+	weld.Parent = swordPreview
+
+	weld.C0 = CFrame.new(0,0,0.62)
+		* CFrame.Angles(math.rad(90), -125, 0)
+end
+
+----------------------------------------------------
+-- Activate
+----------------------------------------------------
+
+local function onActivated()
+	if not Enabled then
+		return
+	end
+
+	if not ToolOwner then
+		return
+	end
+
+	Enabled = false
+
+	local CurrentTime = tick()
+
+	if CurrentTime - Last_Attack < 0.2 then
+		Lunge()
+	else
+		Slash()
+	end
+
+	Last_Attack = CurrentTime
+
+	Enabled = true
+end
+
+----------------------------------------------------
+-- Connections
+----------------------------------------------------
+
+Sword.Touched:Connect(onTouched)
+Sword.TouchEnded:Connect(onTouchEnded)
+
+Tool.Equipped:Connect(onEquipped)
+Tool.Unequipped:Connect(Unequipped)
+
+Tool.Activated:Connect(onActivated)
+
+----------------------------------------------------
+-- Tool Parent Monitor
+----------------------------------------------------
+
+Tool.AncestryChanged:Connect(function()
+	local parent = Tool.Parent
+
+	if parent and parent:IsA("Model") then
+		local hum = parent:FindFirstChildOfClass("Humanoid")
+
+		if hum then
+			MonitorHumanoid(hum)
+		end
+	end
+end)
