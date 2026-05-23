@@ -2,15 +2,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local tool = script.Parent
 local handle = tool:WaitForChild("Handle")
-
-local slashSound = handle:FindFirstChild("SwordSlash")
-local lungeSound = handle:FindFirstChild("SwordLunge")
-local unsheathSound = handle:FindFirstChild("Unsheath")
-
 local remote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("SwordHit")
 
-local lastActivate = 0
+local ATTACK_COOLDOWN = 0.2
 local LUNGE_WINDOW = 0.5
+local ATTACK_ACTIVE_WINDOW = 0.35
+local TOUCH_REPEAT_COOLDOWN = 0.12
+
+local lastActivate = 0
+local attackUntil = 0
+local touchCooldownByPart = {}
 
 local function send(action, hit)
 	remote:FireServer({
@@ -20,43 +21,60 @@ local function send(action, hit)
 	})
 end
 
-local function playAnim(animType)
-	local animation = Instance.new("StringValue")
-	animation.Name = "toolanim"
-	animation.Value = animType
-	animation.Parent = tool
+local function playLocalAttackFeedback(attackType)
+	local soundName = attackType == "lunge" and "SwordLunge" or "SwordSlash"
+	local sound = handle:FindFirstChild(soundName)
+	if sound then
+		sound:Play()
+	end
+
+	local anim = Instance.new("StringValue")
+	anim.Name = "toolanim"
+	anim.Value = attackType == "lunge" and "Lunge" or "Slash"
+	anim.Parent = tool
 end
 
 tool.Equipped:Connect(function()
-	if unsheathSound then
-		unsheathSound:Play()
+	local unsheath = handle:FindFirstChild("Unsheath")
+	if unsheath then
+		unsheath:Play()
 	end
 end)
 
 tool.Activated:Connect(function()
 	local now = tick()
-	local isLunge = (now - lastActivate) < LUNGE_WINDOW
-	lastActivate = now
-
-	if isLunge then
-		if lungeSound then
-			lungeSound:Play()
-		end
-		playAnim("Lunge")
-	else
-		if slashSound then
-			slashSound:Play()
-		end
-		playAnim("Slash")
+	if now - lastActivate < ATTACK_COOLDOWN then
+		return
 	end
 
+	local attackType = (now - lastActivate < LUNGE_WINDOW) and "lunge" or "slash"
+	lastActivate = now
+	attackUntil = now + ATTACK_ACTIVE_WINDOW
+
+	playLocalAttackFeedback(attackType)
 	send("activate")
 end)
 
 handle.Touched:Connect(function(hit)
+	local now = tick()
+	if now > attackUntil then
+		return
+	end
+	if not (hit and hit:IsA("BasePart")) then
+		return
+	end
+
+	local nextAllowed = touchCooldownByPart[hit]
+	if nextAllowed and now < nextAllowed then
+		return
+	end
+	touchCooldownByPart[hit] = now + TOUCH_REPEAT_COOLDOWN
 	send("touch", hit)
 end)
 
 handle.TouchEnded:Connect(function(hit)
+	if hit then
+		touchCooldownByPart[hit] = nil
+	end
 	send("touchEnd", hit)
 end)
