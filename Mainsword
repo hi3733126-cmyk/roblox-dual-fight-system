@@ -141,6 +141,34 @@ local function getDamage(tool, attackType)
 	return idle and idle.Value or 10
 end
 
+
+local function playToolAnimation(tool, attackType)
+	local handle = tool:FindFirstChild("Handle")
+	if not handle then
+		return
+	end
+
+	local soundName = attackType == "lunge" and "SwordLunge" or "SwordSlash"
+	local sound = handle:FindFirstChild(soundName)
+	if sound then
+		sound:Play()
+	end
+
+	local anim = Instance.new("StringValue")
+	anim.Name = "toolanim"
+	anim.Value = attackType == "lunge" and "Lunge" or "Slash"
+	anim.Parent = tool
+
+	if attackType == "lunge" then
+		tool.GripUp = Vector3.new(0, 0, 0)
+		task.delay(0.75, function()
+			if tool and tool.Parent then
+				tool.GripUp = Vector3.new(0, 0, 1)
+			end
+		end)
+	end
+end
+
 local function canDamage(attacker, victim)
 	if not (attacker and victim) then
 		return false
@@ -187,6 +215,7 @@ swordRemote.OnServerEvent:Connect(function(player, payload)
 		end
 		state.lastActivate = now
 		state.attackUntil = now + ATTACK_ACTIVE_WINDOW
+		playToolAnimation(tool, state.attackType)
 		return
 	end
 
