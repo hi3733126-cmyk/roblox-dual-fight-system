@@ -1,0 +1,23 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local tool = script.Parent
+local handle = tool:WaitForChild("Handle")
+
+local remote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("SwordHit")
+
+local function send(action, hit)
+	remote:FireServer({
+		action = action,
+		hit = hit,
+		tool = tool,
+	})
+end
+
+handle.Touched:Connect(function(hit)
+	send("touch", hit)
+end)
+
+handle.TouchEnded:Connect(function(hit)
+	send("touchEnd", hit)
+end)
+
