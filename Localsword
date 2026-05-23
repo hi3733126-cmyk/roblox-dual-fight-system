@@ -8,10 +8,12 @@ local ATTACK_COOLDOWN = 0.2
 local LUNGE_WINDOW = 0.5
 local ATTACK_ACTIVE_WINDOW = 0.35
 local TOUCH_REPEAT_COOLDOWN = 0.12
+local LUNGE_RECOVERY = 1.0
 
 local lastActivate = 0
 local attackUntil = 0
 local touchCooldownByPart = {}
+local lungeLockUntil = 0
 
 local function send(action, hit)
 	remote:FireServer({
@@ -32,6 +34,15 @@ local function playLocalAttackFeedback(attackType)
 	anim.Name = "toolanim"
 	anim.Value = attackType == "lunge" and "Lunge" or "Slash"
 	anim.Parent = tool
+
+	if attackType == "lunge" then
+		tool.GripUp = Vector3.new(0, 0, 0)
+		task.delay(0.75, function()
+			if tool and tool.Parent then
+				tool.GripUp = Vector3.new(0, 0, 1)
+			end
+		end)
+	end
 end
 
 tool.Equipped:Connect(function()
@@ -43,11 +54,17 @@ end)
 
 tool.Activated:Connect(function()
 	local now = tick()
+	if now < lungeLockUntil then
+		return
+	end
 	if now - lastActivate < ATTACK_COOLDOWN then
 		return
 	end
 
 	local attackType = (now - lastActivate < LUNGE_WINDOW) and "lunge" or "slash"
+	if attackType == "lunge" then
+		lungeLockUntil = now + LUNGE_RECOVERY
+	end
 	lastActivate = now
 	attackUntil = now + ATTACK_ACTIVE_WINDOW
 
