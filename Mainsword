@@ -5,8 +5,8 @@ local CollectionService = game:GetService("CollectionService")
 
 local KILL_TAG_LIFETIME = 5
 local STUD_CAP = 13
-local ATTACK_RESET = 0.2
 local LUNGE_WINDOW = 0.5
+local ATTACK_ACTIVE_WINDOW = 0.35
 
 local MONITORED_HUMANOIDS = {}
 local PLAYER_STATE = {}
@@ -43,13 +43,17 @@ local function getVictimPlayer(humanoid)
 	local userId = humanoid:GetAttribute("VictimUserId")
 	if typeof(userId) == "number" then
 		local p = Players:GetPlayerByUserId(userId)
-		if p then return p end
+		if p then
+			return p
+		end
 	end
 	return humanoid.Parent and Players:GetPlayerFromCharacter(humanoid.Parent) or nil
 end
 
 local function awardKill(humanoid)
-	if humanoid:GetAttribute("KillAwarded") or humanoid:GetAttribute("KillProcessing") then return end
+	if humanoid:GetAttribute("KillAwarded") or humanoid:GetAttribute("KillProcessing") then
+		return
+	end
 	humanoid:SetAttribute("KillProcessing", true)
 
 	local creator = humanoid:FindFirstChild("creator")
@@ -88,12 +92,16 @@ local function awardKill(humanoid)
 				if killer.Character and victim.Character then
 					local kr = killer.Character:FindFirstChild("HumanoidRootPart")
 					local vr = victim.Character:FindFirstChild("HumanoidRootPart")
-					if kr and vr then studs = (kr.Position - vr.Position).Magnitude end
+					if kr and vr then
+						studs = (kr.Position - vr.Position).Magnitude
+					end
 				end
 				killFeed:Fire(killer.Name, victim.Name, studs, stolenTime)
 			end
 			local notif = remotesFolder:FindFirstChild("SendKillNotif")
-			if notif then notif:FireClient(killer, victim) end
+			if notif then
+				notif:FireClient(killer, victim)
+			end
 		end
 	end
 
@@ -101,71 +109,137 @@ local function awardKill(humanoid)
 end
 
 local function monitorHumanoid(humanoid)
-	if MONITORED_HUMANOIDS[humanoid] then return end
+	if MONITORED_HUMANOIDS[humanoid] then
+		return
+	end
 	MONITORED_HUMANOIDS[humanoid] = true
-	humanoid.Died:Connect(function() task.defer(awardKill, humanoid) end)
+	humanoid.Died:Connect(function()
+		task.defer(awardKill, humanoid)
+	end)
 	humanoid.AncestryChanged:Connect(function(_, p)
-		if not p then MONITORED_HUMANOIDS[humanoid] = nil end
+		if not p then
+			MONITORED_HUMANOIDS[humanoid] = nil
+		end
 	end)
 end
 
-local function getDamage(tool, isLunge)
+local function getDamage(tool, attackType)
 	local handle = tool:FindFirstChild("Handle")
 	local stats = handle and handle:FindFirstChild("Stats")
-	if not stats then return 10 end
+	if not stats then
+		return 10
+	end
 	local idle = stats:FindFirstChild("Idle")
 	local slash = stats:FindFirstChild("Slash")
 	local lunge = stats:FindFirstChild("Lunge")
-	if isLunge and lunge then return lunge.Value end
-	if slash then return slash.Value end
+	if attackType == "lunge" and lunge then
+		return lunge.Value
+	end
+	if attackType == "slash" and slash then
+		return slash.Value
+	end
 	return idle and idle.Value or 10
 end
 
 local function canDamage(attacker, victim)
-	if not (attacker and victim) then return false end
-	if attacker == victim then return false end
+	if not (attacker and victim) then
+		return false
+	end
+	if attacker == victim then
+		return false
+	end
 	local aSafe = CollectionService:HasTag(attacker, "safe")
 	local vSafe = CollectionService:HasTag(victim, "safe")
-	if aSafe and vSafe then return false end
+	if aSafe and vSafe then
+		return false
+	end
 	return true
 end
 
 swordRemote.OnServerEvent:Connect(function(player, payload)
-	if typeof(payload) ~= "table" then return end
-	local tool = payload.tool
-	local hitPart = payload.hit
-	if not (tool and tool:IsA("Tool") and hitPart and hitPart:IsA("BasePart")) then return end
-	if tool.Parent ~= player.Character then return end
+	if typeof(payload) ~= "table" then
+		return
+	end
 
-	local state = PLAYER_STATE[player] or { lastAttack = 0, isTouchingSafeY = false }
+	local tool = payload.tool
+	local action = payload.action
+	if not (tool and tool:IsA("Tool")) then
+		return
+	end
+	if tool.Parent ~= player.Character then
+		return
+	end
+
+	local state = PLAYER_STATE[player] or {
+		lastActivate = 0,
+		isTouchingSafeY = false,
+		attackType = "slash",
+		attackUntil = 0,
+	}
 	PLAYER_STATE[player] = state
 
-	if payload.action == "touchEnd" then
+	if action == "activate" then
+		local now = tick()
+		if now - state.lastActivate < LUNGE_WINDOW then
+			state.attackType = "lunge"
+		else
+			state.attackType = "slash"
+		end
+		state.lastActivate = now
+		state.attackUntil = now + ATTACK_ACTIVE_WINDOW
+		return
+	end
+
+	local hitPart = payload.hit
+	if not (hitPart and hitPart:IsA("BasePart")) then
+		return
+	end
+
+	if action == "touchEnd" then
 		local safezone = workspace:FindFirstChild("Safezone")
 		local safePart = safezone and safezone:FindFirstChild("safey")
-		if hitPart == safePart then state.isTouchingSafeY = false end
+		if hitPart == safePart then
+			state.isTouchingSafeY = false
+		end
+		return
+	end
+
+	if action ~= "touch" then
+		return
+	end
+
+	if tick() > state.attackUntil then
 		return
 	end
 
 	local hum = hitPart.Parent and hitPart.Parent:FindFirstChild("Humanoid")
-	if not (hum and hum.Health > 0 and player.Character) then return end
-	if hum.Parent == player.Character then return end
+	if not (hum and hum.Health > 0 and player.Character) then
+		return
+	end
+	if hum.Parent == player.Character then
+		return
+	end
 
 	local safezone = workspace:FindFirstChild("Safezone")
 	local safePart = safezone and safezone:FindFirstChild("safey")
-	if hitPart == safePart then state.isTouchingSafeY = true return end
-	if state.isTouchingSafeY then return end
+	if hitPart == safePart then
+		state.isTouchingSafeY = true
+		return
+	end
+	if state.isTouchingSafeY then
+		return
+	end
 
 	local handle = tool:FindFirstChild("Handle")
 	local root = hitPart.Parent:FindFirstChild("HumanoidRootPart")
-	if handle and root and (handle.Position - root.Position).Magnitude > STUD_CAP then return end
+	if handle and root and (handle.Position - root.Position).Magnitude > STUD_CAP then
+		return
+	end
 
 	local victimPlayer = Players:GetPlayerFromCharacter(hum.Parent)
-	if victimPlayer and not canDamage(player, victimPlayer) then return end
-
-	local now = tick()
-	local isLunge = (now - state.lastAttack) < LUNGE_WINDOW
-	state.lastAttack = now
+	if victimPlayer and not canDamage(player, victimPlayer) then
+		return
+	end
 
 	if victimPlayer then
 		hum:SetAttribute("VictimUserId", victimPlayer.UserId)
@@ -175,7 +249,9 @@ swordRemote.OnServerEvent:Connect(function(player, payload)
 	end
 
 	local old = hum:FindFirstChild("creator")
-	if old then old:Destroy() end
+	if old then
+		old:Destroy()
+	end
 	local tag = Instance.new("ObjectValue")
 	tag.Name = "creator"
 	tag.Value = player
@@ -183,11 +259,7 @@ swordRemote.OnServerEvent:Connect(function(player, payload)
 	Debris:AddItem(tag, KILL_TAG_LIFETIME)
 
 	monitorHumanoid(hum)
-	hum:TakeDamage(getDamage(tool, isLunge))
-
-	task.delay(ATTACK_RESET, function()
-		if state == PLAYER_STATE[player] then end
-	end)
+	hum:TakeDamage(getDamage(tool, state.attackType))
 end)
 
 Players.PlayerAdded:Connect(ensureLeaderstats)
