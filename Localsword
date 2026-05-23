@@ -3,7 +3,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local tool = script.Parent
 local handle = tool:WaitForChild("Handle")
 
+local slashSound = handle:FindFirstChild("SwordSlash")
+local lungeSound = handle:FindFirstChild("SwordLunge")
+local unsheathSound = handle:FindFirstChild("Unsheath")
+
 local remote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("SwordHit")
+
+local lastActivate = 0
+local LUNGE_WINDOW = 0.5
 
 local function send(action, hit)
 	remote:FireServer({
@@ -13,6 +20,39 @@ local function send(action, hit)
 	})
 end
 
+local function playAnim(animType)
+	local animation = Instance.new("StringValue")
+	animation.Name = "toolanim"
+	animation.Value = animType
+	animation.Parent = tool
+end
+
+tool.Equipped:Connect(function()
+	if unsheathSound then
+		unsheathSound:Play()
+	end
+end)
+
+tool.Activated:Connect(function()
+	local now = tick()
+	local isLunge = (now - lastActivate) < LUNGE_WINDOW
+	lastActivate = now
+
+	if isLunge then
+		if lungeSound then
+			lungeSound:Play()
+		end
+		playAnim("Lunge")
+	else
+		if slashSound then
+			slashSound:Play()
+		end
+		playAnim("Slash")
+	end
+
+	send("activate")
+end)
+
 handle.Touched:Connect(function(hit)
 	send("touch", hit)
 end)
@@ -20,4 +60,3 @@ end)
 handle.TouchEnded:Connect(function(hit)
 	send("touchEnd", hit)
 end)
-
